@@ -50,7 +50,7 @@ def update_map(lidar_data, robot_x, robot_y, robot_theta):
             # 计算障碍物的相对竞技场的坐标
             obs_x = robot_x + distance * math.cos(angle + robot_theta)
             obs_y = robot_y + distance * math.sin(angle + robot_theta)
-            print(robot_x,robot_y,distance,angle,robot_theta,obs_x,obs_y)
+            #print(robot_x,robot_y,distance,angle,robot_theta,obs_x,obs_y)
             # 映射到栅格地图（左下角为0,0）
             map_x = int(obs_x / GRID_RESOLUTION) + MAP_SIZE // 2
             map_y = int(-obs_y / GRID_RESOLUTION) + MAP_SIZE // 2
@@ -171,11 +171,12 @@ def set_angle(yaw_set, yaw_now):
 
 
 # **机器人初始方向**
-current_direction = random.choice(["FORWARD", "LEFT", "RIGHT"])
-# **随机避障逻辑**
+current_direction = "FORWARD"
+last_direction = "FORWARD"
+# **随机避障逻辑**  遇到障碍物时随机选择方向躲避
 def avoid_obstacle():
     global current_direction
-    current_direction = random.choice(["LEFT", "RIGHT", "BACKWARD"])
+    current_direction = random.choice(["LEFT", "RIGHT"])
 
 
 
@@ -188,17 +189,16 @@ ax2[0].set_xlabel("Time Step")
 ax2[0].set_ylabel("Angle (rad)")
 line_imu, = ax2[0].plot([], [], label='Yaw Angle')
 ax2[0].legend()
-
+# ax2[1].imshow(occupancy_grid, cmap="gray_r")   #使用灰度反转颜色映射
 # 数据列表
 imu_pitch_data_list = []
 times = []
-
-# ax2[1].imshow(occupancy_grid, cmap="gray_r")   #使用灰度反转颜色映射
-
 # 开启交互模式
 plt.ion()
-
-time = 0
+time_Cnt = 0
+front_distance = 0
+lidar_angle = 0
+yaw_check = 0 #在遇到障碍物时，记录当前yaw角度
 # 主控制循环
 while supervisor.step(timeStep) != -1:
     # 获取传感器数据（例如 GPS 或加速度计）来做决策
@@ -209,19 +209,50 @@ while supervisor.step(timeStep) != -1:
     lidar_data = lidar.getRangeImage()
     yaw_now = angle_trans(imu_data[2])
 
-
     #每次计算前清零
     speed_set_L = 0 
     speed_set_R = 0
     # 根据PID输出调整速度
     # set_angle(1, imu_data[2])
     # move_forward(-2)
-
+    time_Cnt += 1
+    # **检查障碍物**
+    front_distance = lidar_data[180]
+    for i in range(165, 195, 1):
+        if lidar_data[i] < front_distance:
+            front_distance = lidar_data[i]
+            lidar_angle = i   #记录最近的障碍物角度
+            
+    last_direction = current_direction
+    #current_direction = "FORWARD"
+    if (front_distance < 0.8 or current_direction == "BACKWARD") and time_Cnt > 20:  
+        yaw_check = yaw_now
+        current_direction = "FORWARD"
+        if lidar_angle > 175 and lidar_angle < 185:        
+            avoid_obstacle()  # 随机改变方向
+        elif lidar_angle > 185:
+            current_direction = "RIGHT"    
+        elif lidar_angle < 175:
+            current_direction = "LEFT"
+        if front_distance < 0.3:
+            current_direction = "BACKWARD"
+        time_Cnt = 0
+       
+    
+    if current_direction == "LEFT":
+        set_angle(yaw_check - 3.14159/4.0, yaw_now)
+    elif current_direction == "RIGHT":
+        set_angle(yaw_check + 3.14159/4.0, yaw_now)
+    if current_direction == "BACKWARD":
+        set_angle(yaw_check + 3.14159, yaw_now)
+        move_forward(0)
+    else:
+        move_forward(6)
     wheel_run()   #控制轮子电机
 
 
     #打印debug信息
-    #print(lidar_data[0], lidar_data[90], lidar_data[180], lidar_data[270], lidar_data[359])
+    print(front_distance,current_direction,last_direction)
     #print(gps_data[0], gps_data[1])
 
     update_map(lidar_data, gps_data[0], gps_data[1], yaw_now)  # 更新地图数据
