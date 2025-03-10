@@ -14,7 +14,7 @@ MAP_SIZE = 100
 GRID_RESOLUTION = 0.1  #定义每个栅格的大小（相对实际大小）
 occupancy_grid = np.zeros((MAP_SIZE, MAP_SIZE))  # 0: 空闲, 1: 障碍  
 exploration_grid = np.zeros((MAP_SIZE, MAP_SIZE))  # 0 代表未探索  1 表示已探索
-exploration_time = np.full((MAP_SIZE, MAP_SIZE), -100)  # 记录每个网格的探索时间(为探索使用-1表示)
+exploration_time = np.full((MAP_SIZE, MAP_SIZE), -200)  # 记录每个网格的探索时间(为探索使用-1表示)
 visual_grid = np.zeros((MAP_SIZE, MAP_SIZE))   #可视化数据
 display = supervisor.getDevice("display")
 display_width = display.getWidth()
@@ -117,6 +117,8 @@ def update_exploration(robot_x, robot_y,yaw_angle):   #填入gps信息
             if is_in_lidar_range(robot_x, robot_y, get_lidar_dis(angle), x, y):
                 x_t = int(x / GRID_RESOLUTION) + MAP_SIZE // 2
                 y_t = int(-y / GRID_RESOLUTION) + MAP_SIZE // 2
+                x_t = min(MAP_SIZE - 1, x_t)
+                y_t = min(MAP_SIZE - 1, y_t)
                 exploration_grid[x_t, y_t] = 1  # 标记为已探索
                 exploration_time[x_t, y_t] += 1  # 记录探索时间
                 exploration_time[x_t, y_t] = min(-30, exploration_time[x_t, y_t])  # 最大值为1
@@ -130,24 +132,24 @@ def get_lidar_dis(angle):
 
 
 
-def test(x,y,robot_x,robot_y,yaw_angle):
-    yaw_angle = -yaw_angle
-    while yaw_angle < 0:
-        yaw_angle += 6.283
-    while yaw_angle > 6.283:
-        yaw_angle -= 6.283
-    angle = math.atan2(y - robot_y, x - robot_x)   #获取对应雷达角度
-    angle = 1.0*3.14159 - angle - yaw_angle
-    if angle > 6.283:
-        angle -= 6.283
-    angle = np.round(np.rad2deg(angle))  # 转换并取整
-    if is_in_lidar_range(robot_x, robot_y, get_lidar_dis(angle), x, y):
-        x = int(x / GRID_RESOLUTION) + MAP_SIZE // 2
-        y = int(-y / GRID_RESOLUTION) + MAP_SIZE // 2
-        exploration_grid[x, y] = 1  # 标记为已探索
-        exploration_time[x, y] += 1  # 记录探索时间
-        exploration_time[x, y] = min(-30, exploration_time[x, y])  # 最大值为1
-    # print(x,y,robot_x,robot_y,get_lidar_dis(angle),angle)
+# def test(x,y,robot_x,robot_y,yaw_angle):
+#     yaw_angle = -yaw_angle
+#     while yaw_angle < 0:
+#         yaw_angle += 6.283
+#     while yaw_angle > 6.283:
+#         yaw_angle -= 6.283
+#     angle = math.atan2(y - robot_y, x - robot_x)   #获取对应雷达角度
+#     angle = 1.0*3.14159 - angle - yaw_angle
+#     if angle > 6.283:
+#         angle -= 6.283
+#     angle = np.round(np.rad2deg(angle))  # 转换并取整
+#     if is_in_lidar_range(robot_x, robot_y, get_lidar_dis(angle), x, y):
+#         x = int(x / GRID_RESOLUTION) + MAP_SIZE // 2
+#         y = int(-y / GRID_RESOLUTION) + MAP_SIZE // 2
+#         exploration_grid[x, y] = 1  # 标记为已探索
+#         exploration_time[x, y] += 1  # 记录探索时间
+#         exploration_time[x, y] = min(-30, exploration_time[x, y])  # 最大值为1
+#     # print(x,y,robot_x,robot_y,get_lidar_dis(angle),angle)
 
 
 
@@ -160,9 +162,10 @@ class PIDController:
         self.p = p
         self.i = i
         self.d = d
-        self.max_integral = 10
+        self.max_integral = 5
         self.prev_error = 0    #上一次误差
         self.integral = 0      #积分
+        self.max_result = 8
     
     def compute(self, error):     #pid计算
         self.integral += error
@@ -175,7 +178,7 @@ class PIDController:
         self.prev_error = error
         return self.p * error + self.i * self.integral + self.d * derivative
 # 创建PID控制器实例
-pid_turn = PIDController(10.0, 0.0, 0.1)     #控制角度的pid
+pid_turn = PIDController(8.0, 0.0, 0.1)     #控制角度的pid
 
 
 
@@ -232,6 +235,7 @@ def set_angle(yaw_set, yaw_now):
     global speed_set_L, speed_set_R
     error = yaw_set - yaw_now
     speed_turn_set = pid_turn.compute(error)
+    speed_turn_set = max(-6.0, min(6.0, speed_turn_set))
     speed_set_L -= speed_turn_set
     speed_set_R += speed_turn_set
 
@@ -311,12 +315,11 @@ while supervisor.step(timeStep) != -1:
     else:
         move_forward(6)
     wheel_run()   #控制轮子电机
-
-    update_exploration(gps_data[0], gps_data[1],yaw_now)  # 更新探索区域
+    if abs(speed_set_L - speed_set_R) < 0.05:
+        update_exploration(gps_data[0], gps_data[1],yaw_now)  # 更新探索区域
     #test(3,3,gps_data[0],gps_data[1],yaw_now)
     #打印debug信息
     # print(exploration_grid[30,20],exploration_time[80,20])
-
     update_map(lidar_data, gps_data[0], gps_data[1], yaw_now)  # 更新地图数据
     draw_map(gps_data[0], gps_data[1])  # 在 Display 上绘制地图
     # 收集数据
@@ -329,15 +332,15 @@ plt.ioff()
 for x in range(MAP_SIZE):
     for y in range(MAP_SIZE):
         if occupancy_grid[x, y] == 1:
-            visual_grid[x, y] = -1  # 障碍物（黑色）
+            visual_grid[x, y] = 50  # 障碍物（黑色）
         elif exploration_grid[x, y] == 1:
             visual_grid[x, y] = exploration_time[x,y]  # 已探索区域（浅色）
         else:
-            visual_grid[x, y] = -100  # 未探索区域（深灰色）
+            visual_grid[x, y] = -200  # 未探索区域（深灰色）
 cmap_custom = mcolors.LinearSegmentedColormap.from_list(
     "custom_map", [(0, "black"), (0.7, "gray"), (1, "red")]
 )    #自定义颜色映射
-im = ax.imshow(visual_grid, cmap=cmap_custom,origin="lower",vmin=-100,vmax=1)   #使用灰度反转颜色映射
+im = ax.imshow(visual_grid, cmap=cmap_custom,origin="lower",vmin=-200,vmax=50)   #使用灰度反转颜色映射
 cbar = fig.colorbar(im, ax=ax)
 cbar.set_label("Exploration Level")
 plt.show()
