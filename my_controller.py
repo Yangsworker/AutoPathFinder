@@ -1,6 +1,7 @@
 from controller import Supervisor,Display
 from controller import Motor, Camera, GPS, InertialUnit, Gyro, Lidar
 import matplotlib.pyplot as plt     #导入matplotlib库绘图
+import random
 import numpy as np
 import math
 # 初始化 Supervisor
@@ -14,9 +15,10 @@ occupancy_grid = np.zeros((MAP_SIZE, MAP_SIZE))  # 0: 空闲, 1: 障碍
 display = supervisor.getDevice("display")
 display_width = display.getWidth()
 display_height = display.getHeight()
+path = []   #用来记录机器人移动路径
 
 
-#过圈处理
+# **过圈处理**
 quanshu = 0
 last_angle = 0
 def angle_quan(angle_now):
@@ -27,10 +29,8 @@ def angle_quan(angle_now):
         quanshu -= 1    
     last_angle = angle_now
     return quanshu
-
-#角度转换
+# **角度转换**
 def angle_trans(angle_real):
-    # angle_real = -angle_real
     #将角度转化为0到2pi，方便过圈处理
     if angle_real < 0:
         angle_real += 6.283
@@ -38,8 +38,7 @@ def angle_trans(angle_real):
     angle_real = angle_real + 3.14159/2.0
 
     return angle_real
-
-#更新地图数据
+# **更新地图数据**
 def update_map(lidar_data, robot_x, robot_y, robot_theta):
     global occupancy_grid
     for i in range(len(lidar_data)):  # 遍历激光雷达每个角度 
@@ -47,7 +46,7 @@ def update_map(lidar_data, robot_x, robot_y, robot_theta):
         angle = 3.14159*1.0 - angle  # 调整角度方向
         distance = lidar_data[i]
         
-        if distance < 1.3:  # 只记录有限距离的数据
+        if distance < 1.5:  # 只记录有限距离的数据
             # 计算障碍物的相对竞技场的坐标
             obs_x = robot_x + distance * math.cos(angle + robot_theta)
             obs_y = robot_y + distance * math.sin(angle + robot_theta)
@@ -58,14 +57,11 @@ def update_map(lidar_data, robot_x, robot_y, robot_theta):
             #若计算所得障碍坐标合法
             if 0 <= map_x < MAP_SIZE and 0 <= map_y < MAP_SIZE:
                 occupancy_grid[map_x, map_y] = 1  # 标记障碍物
-
 # **在 Display 上绘制地图**
-def draw_map():
+def draw_map(robot_x,robot_y):
     display.setColor(0xFFFFFF)  # 设置背景色（白色）
     display.fillRectangle(0, 0, display_width, display_height)  # 清空Display
-
     display.setColor(0x000000)  # 设置障碍物颜色（黑色）
-    
     for x in range(MAP_SIZE):
         for y in range(MAP_SIZE):
             if occupancy_grid[x, y] == 1:
@@ -73,7 +69,14 @@ def draw_map():
                 screen_x = int(x * display_width / MAP_SIZE)
                 screen_y = int(y * display_height / MAP_SIZE)
                 display.drawPixel(screen_x, screen_y)  # 画一个像素点
-    
+    #绘制机器人坐标所在
+    display.setColor(0xFF0000)  # 设置机器人颜色（红色）
+    display.drawPixel(int(robot_x / GRID_RESOLUTION) + MAP_SIZE // 2, int(-robot_y / GRID_RESOLUTION) + MAP_SIZE // 2)  
+    display.setColor(0x0000FF)  # 轨迹颜色（蓝色）
+    for (x, y) in path:
+        screen_x = int(x / GRID_RESOLUTION) + MAP_SIZE // 2
+        screen_y = int(-y / GRID_RESOLUTION) + MAP_SIZE // 2
+        display.drawPixel(screen_x, screen_y)
 
 
 
@@ -101,7 +104,6 @@ class PIDController:
         derivative = error - self.prev_error
         self.prev_error = error
         return self.p * error + self.i * self.integral + self.d * derivative
-
 # 创建PID控制器实例
 pid_turn = PIDController(10.0, 0.0, 0.1)     #控制角度的pid
 
@@ -112,8 +114,6 @@ pid_turn = PIDController(10.0, 0.0, 0.1)     #控制角度的pid
 # 获取轮子
 MW_L = supervisor.getDevice("MW_L")
 MW_R = supervisor.getDevice("MW_R")
-MW_L.setPosition(float('inf'))
-MW_R.setPosition(float('inf'))
 # 获取传感器
 gps = supervisor.getDevice("gps")
 gps.enable(timeStep)
@@ -142,23 +142,22 @@ lidar.enablePointCloud()
 #声明全局变量
 speed_set_L = 0
 speed_set_R = 0
-# 设置轮子速度
+# 设置轮子速度(需要先把位置设置为inf)
 def wheel_run():
     global speed_set_L, speed_set_R
+    MW_L.setPosition(float('inf'))
+    MW_R.setPosition(float('inf'))
     MW_L.setVelocity(speed_set_L)
     MW_R.setVelocity(speed_set_R)
-
 # 控制小车前进、后退、转向
 def move_forward(speed_set):
     global speed_set_L, speed_set_R
     speed_set_L -= speed_set
     speed_set_R -= speed_set
-
 def move_backward(speed_set):
     global speed_set_L, speed_set_R
     speed_set_L += speed_set
     speed_set_R += speed_set
-
 def set_angle(yaw_set, yaw_now):
     global speed_set_L, speed_set_R
     error = yaw_set - yaw_now
@@ -166,6 +165,17 @@ def set_angle(yaw_set, yaw_now):
     speed_set_L -= speed_turn_set
     speed_set_R += speed_turn_set
 
+
+
+
+
+
+# **机器人初始方向**
+current_direction = random.choice(["FORWARD", "LEFT", "RIGHT"])
+# **随机避障逻辑**
+def avoid_obstacle():
+    global current_direction
+    current_direction = random.choice(["LEFT", "RIGHT", "BACKWARD"])
 
 
 
@@ -183,7 +193,7 @@ ax2[0].legend()
 imu_pitch_data_list = []
 times = []
 
-ax2[1].imshow(occupancy_grid, cmap="gray_r")   #使用灰度反转颜色映射
+# ax2[1].imshow(occupancy_grid, cmap="gray_r")   #使用灰度反转颜色映射
 
 # 开启交互模式
 plt.ion()
@@ -211,17 +221,18 @@ while supervisor.step(timeStep) != -1:
 
 
     #打印debug信息
- #   print(lidar_data[0], lidar_data[90], lidar_data[180], lidar_data[270], lidar_data[359])
+    #print(lidar_data[0], lidar_data[90], lidar_data[180], lidar_data[270], lidar_data[359])
     #print(gps_data[0], gps_data[1])
 
     update_map(lidar_data, gps_data[0], gps_data[1], yaw_now)  # 更新地图数据
-    draw_map()
+    draw_map(gps_data[0], gps_data[1])  # 在 Display 上绘制地图
     # 收集数据
+    path.append([gps_data[0], gps_data[1]])  # 记录机器人移动路径
     imu_pitch_data_list.append(yaw_now)  # yaw 角度
     times.append(len(times))  # 将当前时间步数作为时间戳
     # 实时更新图形
     line_imu.set_data(times, imu_pitch_data_list)  # 更新IMU pitch数据图形
-     # 设置 x 轴范围
+    # 设置 x 轴范围
     ax2[0].set_xlim(0, len(times))
     # 动态调整 y 轴范围
     ax2[0].relim()  # 重新计算 y 轴的范围
@@ -230,7 +241,7 @@ while supervisor.step(timeStep) != -1:
     
 # 关闭交互模式，保持图形窗口display_map
 plt.ioff()
-ax2[1].imshow(occupancy_grid, cmap="gray_r")   #使用灰度反转颜色映射
+# ax2[1].imshow(occupancy_grid, cmap="gray_r")   #使用灰度反转颜色映射
 plt.show()
     
 
